@@ -5,7 +5,7 @@ QEMU = qemu-system-i386
 all: build allinone
 
 build: boot/mbr.bin boot/setup.bin xinux_disk.img xinux_data.img
-	@echo "[+] Biên dịch và đóng gói hệ thống XINUX thành công!"
+	@echo "[+] XINUX system compiled and packaged successfully!"
 
 boot/mbr.bin: boot/mbr.s
 	$(ASM) -f bin boot/mbr.s -o boot/mbr.bin
@@ -21,7 +21,7 @@ xinux_disk.img:
 xinux_data.img:
 	dd if=/dev/zero of=xinux_data.img bs=1M count=2 2>/dev/null
 
-# Mục tiêu tạo file All-in-One cho Rufus
+# Target for creating the All-in-One file for Rufus
 allinone: build
 	$(PYTHON) tools/mkfs_all_in_one.py
 
@@ -31,7 +31,7 @@ qemu: build
 		-drive format=raw,file=xinux_data.img,index=1,media=disk \
 		-vnc :0
 
-# Chạy QEMU với file gộp All-in-One (giống hệt cắm USB thật)
+# Run QEMU with the combined All-in-One file (exactly like plugging in a real USB drive)
 qemu-usb: allinone
 	$(QEMU) \
 		-drive format=raw,file=xinux_all_in_one.img,media=disk \
@@ -42,6 +42,6 @@ scan:
 
 clean:
 	rm -f boot/*.bin *.img
-	@echo "[+] Đã dọn dẹp sạch sẽ các file binary và ổ đĩa ảo!"
+	@echo "[+] All binary files and virtual disk images have been cleaned up!"
 
 .PHONY: all build allinone qemu qemu-usb scan clean

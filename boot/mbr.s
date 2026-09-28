@@ -2,17 +2,20 @@
 [ORG 0x7C00]
 
 start:
-    xor ax, ax
+    mov ax, 0
     mov ds, ax
     mov es, ax
+    mov ss, ax
+    mov sp, 0x8000
+    cld
 
-    ; Đọc setup.bin từ sector 2 vào RAM tại 0x7E00
+    ; Read setup.bin from sector 2 into RAM at 0x7E00
     mov ah, 0x02
-    mov al, 20          ; Đọc 20 sectors chứa setup
+    mov al, 20          ; Read 20 sectors containing setup
     mov ch, 0
     mov dh, 0
-    mov cl, 2           ; Bắt đầu từ sector 2
-    mov dl, 0x80        ; Ổ đĩa chính (sda)
+    mov cl, 2           ; Start from sector 2
+    mov dl, 0x80        ; Primary disk (sda)
     mov bx, 0x7E00
     int 0x13
     jc disk_error

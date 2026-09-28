@@ -2,22 +2,28 @@
 [bits 16]
 
 start:
-    xor ax, ax
+    mov ax, 0
     mov ds, ax
     mov es, ax
     mov ss, ax
-    mov sp, 0x7c00
+    mov sp, 0x8000 ; Place the initial stack at 0x8000
 
-    ; Lưu tên thiết bị từ BIOS vào địa chỉ 0x90500 để Kernel dùng
-    mov si, bios_device_name
-    mov di, 0x90500
+    ; Save the kernel name at physical address 0x90500 using ES:DI addressing
+    mov ax, 0x9000
+    mov es, ax
+    mov di, 0x0500
+    mov si, kernel_name
+    cld
+
 .copy_bios:
     lodsb
     stosb
     test al, al
     jnz .copy_bios
 
-    ; Đọc Kernel từ ổ đĩa (Sector 2, đọc 30 sectors vào 0x1000)
+    ; Read the kernel from the disk
+    mov ax, 0
+    mov es, ax
     mov ah, 0x02
     mov al, 30
     mov ch, 0
@@ -27,7 +33,7 @@ start:
     int 0x13
     jc disk_error
 
-    ; Chuyển sang Protected Mode 32-bit
+    ; Switch to 32-bit Protected Mode
     cli
     lgdt [gdt_descriptor]
     mov eax, cr0
@@ -39,6 +45,7 @@ disk_error:
     jmp $
 
 [bits 32]
+
 protected_mode_start:
     mov ax, 0x10
     mov ds, ax
@@ -48,18 +55,21 @@ protected_mode_start:
     mov ss, ax
     mov esp, 0x90000
 
-    jmp 0x1000                  ; Nhảy vào nhân kernel.s tại 0x1000
+    jmp 0x1000 ; Jump to kernel loaded at 0x1000
 
-bios_device_name db 'Xinux-VM-Box', 0
+kernel_name db 'Xinux-VM-Box', 0
 
 gdt_start:
     dq 0
+
 gdt_code:
     dw 0xFFFF, 0x0000
     db 0x00, 10011010b, 11001111b, 0x00
+
 gdt_data:
     dw 0xFFFF, 0x0000
     db 0x00, 10010010b, 11001111b, 0x00
+
 gdt_end:
 
 gdt_descriptor:
