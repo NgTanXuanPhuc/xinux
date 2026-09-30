@@ -2,9 +2,8 @@
 [ORG 0x7E00]
 
 main_setup:
-    mov ax, 0x0003
-    int 0x10                  ; Clear the screen and set text mode
-    cld                       ; Ensure string instructions move forward
+    cld
+    call init_screen
 
 grub_menu:
     mov si, msg_grub_title
@@ -40,8 +39,7 @@ grub_menu:
     jmp start_loading
 
 start_loading:
-    mov ax, 0x0003
-    int 0x10
+    call init_screen
 
     mov si, msg_xinux_banner_1
     call print_string
@@ -161,8 +159,7 @@ main_prompt:
     jmp main_prompt
 
 .h_clr:
-    mov ax, 0x0003
-    int 0x10
+    call init_screen
     jmp main_prompt
 
 .h_reboot:
@@ -327,15 +324,95 @@ ext2_read_file_content:
 
     ret
 
+; ============================================================
+; UTF-8 output
+; ============================================================
+
 print_string:
+.next:
     lodsb
-    or al, al
+
+    test al, al
     jz .done
 
-    mov ah, 0x0E
-    int 0x10
+    ; CR
+    cmp al, 0x0D
+    je .newline
 
-    jmp print_string
+    ; LF
+    ; CR already moves the cursor, so ignore LF.
+    cmp al, 0x0A
+    je .next
+
+    ; ASCII
+    cmp al, 0x80
+    jb .ascii
+
+    ; 2-byte UTF-8 sequence
+    cmp al, 0xE0
+    jb .utf8_2
+
+    ; 3-byte UTF-8 sequence
+    cmp al, 0xF0
+    jb .utf8_3
+
+    ; 4-byte UTF-8 is not supported by this renderer.
+    jmp .unsupported
+
+.ascii:
+    call vga_put_glyph
+    jmp .next
+
+.utf8_2:
+    xor bx, bx
+
+    and al, 0x1F
+    mov bl, al
+    shl bx, 6
+
+    lodsb
+    and al, 0x3F
+
+    xor ah, ah
+    add bx, ax
+
+    call unicode_to_glyph
+    call vga_put_glyph
+
+    jmp .next
+
+.utf8_3:
+    xor bx, bx
+
+    and al, 0x0F
+    mov bl, al
+    shl bx, 6
+
+    lodsb
+    and al, 0x3F
+    xor ah, ah
+    add bx, ax
+
+    shl bx, 6
+
+    lodsb
+    and al, 0x3F
+    xor ah, ah
+    add bx, ax
+
+    call unicode_to_glyph
+    call vga_put_glyph
+
+    jmp .next
+
+.unsupported:
+    mov al, '?'
+    call vga_put_glyph
+    jmp .next
+
+.newline:
+    call vga_newline
+    jmp .next
 
 .done:
     ret
@@ -359,8 +436,7 @@ read_line:
     stosb
     inc cx
 
-    mov ah, 0x0E
-    int 0x10
+    call vga_put_glyph
 
     jmp .rl
 
@@ -371,15 +447,18 @@ read_line:
     dec di
     dec cx
 
-    mov ah, 0x0E
-    mov al, 0x08
-    int 0x10
+    ; Move one character backwards.
+    cmp byte [cursor_x], 0
+    je .rl
 
+    dec byte [cursor_x]
+
+    ; Erase the character.
     mov al, ' '
-    int 0x10
+    call vga_put_glyph
 
-    mov al, 0x08
-    int 0x10
+    ; vga_put_glyph advanced one position.
+    dec byte [cursor_x]
 
     jmp .rl
 
@@ -472,7 +551,445 @@ delay_20_seconds:
     jnz .dl_outer
 
     ret
+; ============================================================
+; VGA / Unicode renderer
+; ============================================================
 
+VGA_SEGMENT equ 0xB800
+FONT_SEGMENT equ 0x9000
+FONT_HEIGHT equ 16
+
+init_screen:
+    ; Reset VGA text mode.
+    mov ax, 0x0003
+    int 0x10
+
+    mov byte [cursor_x], 0
+    mov byte [cursor_y], 0
+
+    call init_unicode_font
+
+    ret
+
+
+; ------------------------------------------------------------
+; Copy the BIOS 8x16 font to RAM and build Vietnamese glyphs.
+; ------------------------------------------------------------
+
+init_unicode_font:
+    push ds
+    push es
+    push si
+    push di
+    push bp
+    push bx
+    push cx
+    push dx
+
+    ; BIOS: get 8x16 font address.
+    mov ax, 0x1130
+    mov bh, 0x06
+    int 0x10
+
+    ; BIOS returns the font in ES:BP.
+    mov si, bp
+
+    ; Destination: 9000:0000
+    mov ax, FONT_SEGMENT
+    mov es, ax
+    xor di, di
+
+    ; DS = BIOS font segment.
+    push ds
+    mov ax, es
+    mov ds, ax
+    ; This is only temporary; source was ES before changing ES.
+    pop ds
+
+    ; The BIOS returned ES:BP, but ES is now 9000.
+    ; Retrieve the original font again.
+    mov ax, 0x1130
+    mov bh, 0x06
+    int 0x10
+
+    ; Source is ES:BP.
+    push ds
+    mov ax, es
+    mov ds, ax
+    mov si, bp
+
+    ; Destination is 9000:0000.
+    mov ax, FONT_SEGMENT
+    mov es, ax
+    xor di, di
+
+    ; 256 glyphs * 16 bytes = 4096 bytes.
+    mov cx, 2048
+    rep movsw
+
+    pop ds
+
+    ; Build the Vietnamese glyphs.
+    call build_vietnamese_font
+
+    ; Load our modified font into VGA.
+    mov ax, FONT_SEGMENT
+    mov es, ax
+    xor bp, bp
+
+    mov ax, 0x1110
+    mov bh, 16
+    mov bl, 0
+    mov cx, 256
+    xor dx, dx
+    int 0x10
+
+    pop dx
+    pop cx
+    pop bx
+    pop bp
+    pop di
+    pop si
+    pop es
+    pop ds
+
+    ret
+
+
+; ------------------------------------------------------------
+; Copy an ASCII glyph and add Vietnamese marks.
+;
+; Table entry:
+;
+;   word Unicode code point
+;   byte glyph index
+;   byte ASCII base character
+;   byte shape
+;   byte tone
+;
+; Shape:
+;   0 = none
+;   1 = breve
+;   2 = circumflex
+;   3 = horn
+;   4 = stroke
+;
+; Tone:
+;   0 = none
+;   1 = acute
+;   2 = grave
+;   3 = hook
+;   4 = tilde
+;   5 = dot below
+; ------------------------------------------------------------
+
+build_vietnamese_font:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push bp
+
+    mov si, unicode_table
+
+    mov cx, (unicode_table_end - unicode_table) / 6
+
+.next_glyph:
+    ; --------------------------------------------------------
+    ; Copy base ASCII glyph.
+    ; --------------------------------------------------------
+
+    xor ax, ax
+    mov al, [si + 3]
+
+    ; AX *= 16
+    shl ax, 1
+    shl ax, 1
+    shl ax, 1
+    shl ax, 1
+
+    mov bp, ax
+
+    xor ax, ax
+    mov al, [si + 2]
+
+    ; AX *= 16
+    shl ax, 1
+    shl ax, 1
+    shl ax, 1
+    shl ax, 1
+
+    mov di, ax
+
+    mov dx, 16
+
+.copy_base:
+    mov al, [es:bp]
+    mov [es:di], al
+
+    inc bp
+    inc di
+
+    dec dx
+    jnz .copy_base
+
+    ; --------------------------------------------------------
+    ; Recalculate destination glyph address.
+    ; --------------------------------------------------------
+
+    xor ax, ax
+    mov al, [si + 2]
+
+    shl ax, 1
+    shl ax, 1
+    shl ax, 1
+    shl ax, 1
+
+    mov di, ax
+
+    ; --------------------------------------------------------
+    ; Shape.
+    ; --------------------------------------------------------
+
+    mov al, [si + 4]
+
+    cmp al, 1
+    je .breve
+
+    cmp al, 2
+    je .circumflex
+
+    cmp al, 3
+    je .horn
+
+    cmp al, 4
+    je .stroke
+
+    jmp .tone
+
+
+.breve:
+    or byte [es:di + 0], 0x3C
+    or byte [es:di + 1], 0x42
+    jmp .tone
+
+
+.circumflex:
+    or byte [es:di + 0], 0x18
+    or byte [es:di + 1], 0x24
+    or byte [es:di + 2], 0x42
+    jmp .tone
+
+
+.horn:
+    or byte [es:di + 0], 0x02
+    or byte [es:di + 1], 0x06
+    or byte [es:di + 2], 0x04
+    jmp .tone
+
+
+.stroke:
+    ; Horizontal stroke for Đ / đ.
+    or byte [es:di + 7], 0x7E
+    jmp .tone
+
+
+.tone:
+    mov al, [si + 5]
+
+    cmp al, 1
+    je .acute
+
+    cmp al, 2
+    je .grave
+
+    cmp al, 3
+    je .hook
+
+    cmp al, 4
+    je .tilde
+
+    cmp al, 5
+    je .dot
+
+    jmp .next
+
+
+.acute:
+    or byte [es:di + 0], 0x04
+    or byte [es:di + 1], 0x08
+    jmp .next
+
+
+.grave:
+    or byte [es:di + 0], 0x20
+    or byte [es:di + 1], 0x10
+    jmp .next
+
+
+.hook:
+    or byte [es:di + 0], 0x08
+    or byte [es:di + 1], 0x04
+    jmp .next
+
+
+.tilde:
+    or byte [es:di + 0], 0x24
+    or byte [es:di + 1], 0x18
+    jmp .next
+
+
+.dot:
+    or byte [es:di + 14], 0x18
+    or byte [es:di + 15], 0x18
+
+
+.next:
+    add si, 6
+    loop .next
+
+    pop bp
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+
+    ret
+
+
+; ------------------------------------------------------------
+; Unicode code point in BX.
+;
+; Returns:
+;   AL = VGA glyph index
+;
+; Unsupported Unicode:
+;   AL = '?'
+; ------------------------------------------------------------
+
+unicode_to_glyph:
+    push bx
+    push cx
+    push dx
+    push di
+
+    mov dx, bx
+    mov di, unicode_table
+
+    mov cx, (unicode_table_end - unicode_table) / 6
+
+.lookup:
+    cmp dx, [di]
+    je .found
+
+    add di, 6
+    loop .lookup
+
+    mov al, '?'
+    jmp .done
+
+.found:
+    mov al, [di + 2]
+
+.done:
+    pop di
+    pop dx
+    pop cx
+    pop bx
+
+    ret
+
+
+; ------------------------------------------------------------
+; Write one glyph directly to VGA text memory.
+;
+; AL = glyph index
+; ------------------------------------------------------------
+
+vga_put_glyph:
+    push bx
+    push dx
+    push di
+    push es
+
+    mov ax, VGA_SEGMENT
+    mov es, ax
+
+    ; row * 160
+    xor bx, bx
+    mov bl, [cursor_y]
+
+    mov dx, bx
+
+    shl bx, 7
+    shl dx, 5
+
+    add bx, dx
+
+    ; column * 2
+    xor dx, dx
+    mov dl, [cursor_x]
+    shl dx, 1
+
+    add bx, dx
+
+    mov [es:bx], al
+    mov byte [es:bx + 1], 0x07
+
+    inc byte [cursor_x]
+
+    cmp byte [cursor_x], 80
+    jb .done
+
+    mov byte [cursor_x], 0
+    inc byte [cursor_y]
+
+    call vga_scroll
+
+.done:
+    pop es
+    pop di
+    pop dx
+    pop bx
+
+    ret
+
+
+vga_newline:
+    mov byte [cursor_x], 0
+    inc byte [cursor_y]
+
+    call vga_scroll
+
+    ret
+
+
+vga_scroll:
+    cmp byte [cursor_y], 25
+    jb .done
+
+    ; Scroll one text row upward.
+    mov ax, 0x0601
+    mov bh, 0x07
+    mov cx, 0x0000
+    mov dx, 0x184F
+    int 0x10
+
+    mov byte [cursor_y], 24
+
+.done:
+    ret
+
+
+cursor_x:
+    db 0
+
+cursor_y:
+    db 0
 
 ; ============================================================
 ; Boot menu
