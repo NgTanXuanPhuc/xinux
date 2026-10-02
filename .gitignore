@@ -1,0 +1,18 @@
+# Build artifacts
+*.o
+*.elf
+*.map
+
+# Generated boot binaries
+boot/*.bin
+
+# Generated disk images
+*.img
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Editor / IDE
+.vscode/
+.vscode-test/
